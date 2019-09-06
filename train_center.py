@@ -1,7 +1,7 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
-from model.efnet.efficientnet_c import efficientnet_b2
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+from model.efnet.efficientnet_c import efficientnet_b0
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
@@ -15,7 +15,9 @@ from torch.optim import lr_scheduler
 from PIL import ImageFile
 from losses import hing
 import glob
+from optm_third import over9000
 import os
+from tqdm import tqdm
 
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -50,26 +52,30 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
 
     cls_num = len(imagenet_data.class_to_idx)
     data_loader = DataLoader(imagenet_data, batch_size=batch_size, shuffle=True)
-    model = efficientnet_b2(num_classes=cls_num,drop_rate=0.3,drop_connect_rate=0.3)
+    model = efficientnet_b0(num_classes=cls_num,drop_rate=0.2,drop_connect_rate=0.3)
     model.load_state_dict(torch.load(checkdrs), strict=False)
     model.cuda()
-    ct = center_loss.CenterLoss(cls_num, 4)
-    ct.cuda()
+    ct_loss = center_loss.CenterLoss(cls_num,8,use_gpu=True)
 
-    state = {'learning_rate': 0.01, 'momentum': 0.9, 'decay': 0.0005}
+
+    state = {'learning_rate': 0.001, 'momentum': 0.9, 'decay': 0.0005}
     optimizer = torch.optim.SGD(model.parameters(), state['learning_rate'], momentum=state['momentum'],
                                 weight_decay=state['decay'], nesterov=True)
+    #optimizer = torch.optim.Adam(model.parameters(), 0.002, amsgrad=True,weight_decay=state['decay'])
+    parms = list(model.parameters())+list(ct_loss.parameters())
 
-    optimizer4nn = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=0.0005)
-    sheduler = lr_scheduler.StepLR(optimizer4nn, 20, gamma=0.8)
-    optimzer4center = torch.optim.SGD(ct.parameters(), lr=0.5)
+    #optimizer = torch.optim.SGD(parms, lr=0.01, momentum=0.9, weight_decay=0.0005)
+    optimizer = over9000.Over9000(parms, lr=1e-2,weight_decay=0.0005)
+    sheduler = lr_scheduler.StepLR(optimizer, 20, gamma=0.8)
+
+    optimzer_center = torch.optim.SGD(ct_loss.parameters(), lr=0.5)
 
 
     state['label_ix'] = imagenet_data.class_to_idx
     state['cls_name'] = name
 
     state['best_accuracy'] = 0
-    sch = lr_scheduler.ReduceLROnPlateau(optimizer=optimizer4nn, factor=0.5, patience=5)
+    sch = lr_scheduler.ReduceLROnPlateau(optimizer=optimzer_center, factor=0.5, patience=5)
     ll = len(data_loader.dataset)
 
     test_acc = []
@@ -86,30 +92,34 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
         acc = []
         ls = []
         nm = 0
-        for (data, target) in data_loader:
+        for (data, target) in tqdm(data_loader):
             inputs, target = torch.autograd.Variable(data.cuda()), torch.autograd.Variable(target.cuda())
             fc,output = model(inputs)
             pred = output.data.max(1)[1]
             correct += float(pred.eq(target.data).sum())
             optimizer.zero_grad()
+
             #loss = mixup_criterion(focal_loss, output, targets_a, targets_b, lam)
             #loss = F.cross_entropy(output, target)
-            loss = F.cross_entropy(output, target) + 0.5 * ct(target, fc)
+            cs_loss = F.cross_entropy(output, target)
+            ct_losses = ct_loss(fc, target) * 0.5
+            loss = cs_loss+ct_losses
 
-            optimizer4nn.zero_grad()
-            optimzer4center.zero_grad()
 
             loss.backward()
 
-            optimizer4nn.step()
-            optimzer4center.step()
+
+
+
+            optimizer.step()
+
 
 
             loss_avg = loss_avg * 0.2 + float(loss) * 0.8
             ls.append(loss_avg)
             acc.append(correct/ll)
             nm+=batch_size
-            print(state['epoch'],nm,correct, ll, loss_avg)
+        print(state['epoch'],nm,correct, ll,cs_loss.item(), loss_avg)
 
 
         state['train_accuracy'] = correct / len(data_loader.dataset)
@@ -122,10 +132,7 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
             print(test_data_loader)
             for batch_idx, (data, target) in enumerate(test_data_loader):
                 data, target = torch.autograd.Variable(data.cuda()), torch.autograd.Variable(target.cuda())
-                print(target)
-                print(target.size())
-                output = model(data)
-                print(output.size())
+                _, output = model(data)
                 loss = F.cross_entropy(output, target)
 
                 pred = output.data.max(1)[1]
@@ -140,7 +147,7 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
 
 
     best_accuracy = 0.0
-    for epoch in range(60):
+    for epoch in range(300):
         state['epoch'] = epoch
         train()
         test()
@@ -161,4 +168,4 @@ if __name__ == '__main__':
     train_dr = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/data/laji/train'
     test_dr = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/data/laji/valid'
     sv = ''
-    run(train_dr,test_dr, name='xag',svdr=sv,checkdrs='/home/dsl/all_check/efficientnet_b2-cf78dc4d.pth')
+    run(train_dr,test_dr, name='xag',svdr=sv,checkdrs='/home/dsl/all_check/efficientnet_b0-d6904d92.pth')

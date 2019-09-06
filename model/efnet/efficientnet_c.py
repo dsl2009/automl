@@ -624,8 +624,9 @@ class GenEfficientNet(nn.Module):
             self.bn2 = None if self.efficient_head else nn.BatchNorm2d(self.num_features, **bn_args)
 
         self.global_pool = SelectAdaptivePool2d(pool_type=global_pool)
-        self.cls = nn.Linear(self.num_features * self.global_pool.feat_mult(), 4)
-        self.fc = nn.Linear(4, self.num_classes)
+        self.cls = nn.Linear(self.num_features * self.global_pool.feat_mult(), 8)
+        self.fc = nn.Linear(8, self.num_classes)
+        self.prelu = nn.PReLU()
 
         for m in self.modules():
             if weight_init == 'goog':
@@ -674,7 +675,7 @@ class GenEfficientNet(nn.Module):
         x = self.forward_features(x)
         if self.drop_rate > 0.:
             x = F.dropout(x, p=self.drop_rate, training=self.training)
-        f = self.cls(x)
+        f = self.prelu(self.cls(x))
         o = self.fc(f)
         return f,o
 

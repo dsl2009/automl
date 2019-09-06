@@ -12,16 +12,16 @@ class garbage_classify_service(PTServingBaseService):
         self.model_path = model_path
         self.signature_key = 'predict_images'
 
-        self.input_size = 224  # the input image size of the model
+        self.input_size = 320  # the input image size of the model
         self.trans = transforms.Compose([
-            transforms.Resize(280),
-            transforms.CenterCrop(260),
+            transforms.Resize(320),
+            transforms.CenterCrop(320),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
             ])
         self.input_key_1 = 'input_img'
         self.output_key_1 = 'output_score'
-        self.model = efficientnet.efficientnet_b2(num_classes=40)
+        self.model = efficientnet.efficientnet_b0(num_classes=40)
         self.model.load_state_dict(torch.load(self.model_path,map_location='cpu'))
         self.model.eval()
         self.label_id_name_dict = \

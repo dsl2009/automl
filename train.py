@@ -1,7 +1,7 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
-from timm.models import gen_efficientnet
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+from base_model import native_senet
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
@@ -13,25 +13,24 @@ import numpy as np
 import json
 from torch.optim import lr_scheduler
 from PIL import ImageFile
-from losses import hing
-import glob
 import os
-
-
+from timm.models import gen_efficientnet
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+from optm_third import over9000
+from base_model import stn
 data_transforms = {
     'train': transforms.Compose([
-        transforms.RandomResizedCrop(260,scale=(0.8,1.0)),
+        transforms.RandomResizedCrop(224,scale=(0.7,1.5)),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.2, hue=0.2),
         transforms.RandomVerticalFlip(),
-        transforms.RandomAffine(30),
+        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.2, hue=0.2),
+        transforms.RandomGrayscale(0.1),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
     'val': transforms.Compose([
-        transforms.Resize(280),
-        transforms.CenterCrop(260),
+        transforms.Resize(224),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
@@ -50,14 +49,23 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
 
     cls_num = len(imagenet_data.class_to_idx)
     data_loader = DataLoader(imagenet_data, batch_size=batch_size, shuffle=True)
-    model = gen_efficientnet.efficientnet_b2(drop_rate=0.2,drop_connect_rate=0.2)
+    model = gen_efficientnet.efficientnet_b0(num_classes=1000,drop_rate=0.5,drop_connect_rate=0.5)
     model.load_state_dict(torch.load(checkdrs), strict=False)
-    model.classifier = nn.Linear(1408, cls_num)
+
+
+    model.classifier = nn.Linear(1280, cls_num)
     model.cuda()
 
-    state = {'learning_rate': 0.01, 'momentum': 0.9, 'decay': 0.0005}
-    optimizer = torch.optim.SGD(model.parameters(), state['learning_rate'], momentum=state['momentum'],
-                                weight_decay=state['decay'], nesterov=True)
+    stn_net = stn.Net()
+    stn_net.cuda()
+
+    state = {'learning_rate': 0.01, 'momentum': 0.9, 'decay': 0.01}
+    #optimizer = torch.optim.SGD(model.parameters(), state['learning_rate'],momentum=0.9,
+                                #weight_decay=state['decay'], nesterov=True)
+    parms = list(model.parameters())+list(stn_net.parameters())
+    optimizer = over9000.Over9000(parms,weight_decay=0.01)
+
+    print(cls_num)
     state['label_ix'] = imagenet_data.class_to_idx
     state['cls_name'] = name
 
@@ -70,6 +78,12 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
 
     def train():
         model.train()
+        #model.bn1.eval()
+        #model.blocks.eval()
+        #model.conv_stem.eval()
+        for layers in model.modules():
+            if isinstance(layers, nn.BatchNorm2d):
+                layers.eval()
         loss_avg = 0.0
         ip1_loader = []
         idx_loader = []
@@ -84,9 +98,11 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
             correct += float(pred.eq(target.data).sum())
             optimizer.zero_grad()
             #loss = mixup_criterion(focal_loss, output, targets_a, targets_b, lam)
-            #loss = F.cross_entropy(output, target)
-            loss = hing.hing_loss(output,target)
+            loss = F.cross_entropy(output, target)
+
+            #loss = hing.hing_loss(output,target)
             loss.backward()
+
             optimizer.step()
             loss_avg = loss_avg * 0.2 + float(loss) * 0.8
             ls.append(loss_avg)
@@ -102,17 +118,11 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
             model.eval()
             loss_avg = 0.0
             correct = 0
-            print(test_data_loader)
             for batch_idx, (data, target) in enumerate(test_data_loader):
                 data, target = torch.autograd.Variable(data.cuda()), torch.autograd.Variable(target.cuda())
-                print(target)
-                print(target.size())
                 output = model(data)
-                print(output.size())
                 loss = F.cross_entropy(output, target)
-
                 pred = output.data.max(1)[1]
-
                 correct += float(pred.eq(target.data).sum())
                 loss_avg += float(loss)
                 state['test_loss'] = loss_avg / len(test_data_loader)
@@ -123,7 +133,7 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
 
 
     best_accuracy = 0.0
-    for epoch in range(60):
+    for epoch in range(30):
         state['epoch'] = epoch
         train()
         test()
@@ -132,6 +142,7 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
         if best_accuracy > state['best_accuracy']:
             state['best_accuracy'] = best_accuracy
             torch.save(model.state_dict(), os.path.join(svdr, name + '.pth'))
+            torch.save(stn_net.state_dict(), os.path.join(svdr, name + 'stn.pth'))
             with open(os.path.join(svdr, name + '.json'), 'w') as f:
                 f.write(json.dumps(state))
                 f.flush()
@@ -141,7 +152,32 @@ def run(trainr, test_dr,name,svdr,  checkdrs):
 
 
 if __name__ == '__main__':
-    train_dr = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/data/laji/train'
-    test_dr = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/data/laji/valid'
-    sv = ''
-    run(train_dr,test_dr, name='xag',svdr=sv,checkdrs='/home/dsl/all_check/efficientnet_b2-cf78dc4d.pth')
+    import glob
+    import shutil
+    f1 = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/flower/train/daisy'
+    f2 = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/flower/train/roses'
+    root = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/flower/test'
+    if not os.path.exists(root):
+        os.makedirs(root)
+
+    for i in range(1,6,1):
+        for x in glob.glob(os.path.join(root,'*','*.jpg')):
+            os.remove(x)
+        daisy_dr = os.path.join(root,'daisy')
+        roses_dr = os.path.join(root, 'roses')
+        if not os.path.exists(daisy_dr):
+            os.makedirs(daisy_dr)
+        if not os.path.exists(roses_dr):
+            os.makedirs(roses_dr)
+
+        for x in glob.glob(os.path.join(f1,'*.jpg')):
+            if np.random.randint(0,6)==1:
+                shutil.copy(x,daisy_dr)
+        for x in glob.glob(os.path.join(f2,'*.jpg')):
+            if np.random.randint(0,6)<i:
+                shutil.copy(x,roses_dr)
+
+        train_dr = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/flower/test'
+        test_dr = '/media/dsl/20d6b919-92e1-4489-b2be-a092290668e4/flower/valid'
+        sv = ''
+        run(train_dr,test_dr, name='xag'+str(i),svdr=sv,checkdrs='/home/dsl/all_check/efficientnet_b0-d6904d92.pth')

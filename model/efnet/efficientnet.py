@@ -673,7 +673,7 @@ class GenEfficientNet(nn.Module):
         x = self.forward_features(x)
         if self.drop_rate > 0.:
             x = F.dropout(x, p=self.drop_rate, training=self.training)
-        return self.classifier(x)
+        return x,self.classifier(x)
 
 
 def _gen_mnasnet_a1(channel_multiplier, num_classes=1000, **kwargs):
